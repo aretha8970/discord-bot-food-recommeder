@@ -1,0 +1,351 @@
+
+import os
+import sqlite3
+import discord
+from discord.ext import commands
+from config import TOKEN
+
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+DB_PATH = os.path.join(BASE_DIR, "makanan.db")
+
+# Tag mengikuti resep umum; pengguna tetap perlu memeriksa bahan makanan.
+ALERGENS = {"susu", "telur", "kacang", "kedelai", "gluten", "ikan", "udang"}
+
+
+def initialize_allergen_data():
+    """Menambahkan data alergen pada basis data lama tanpa menghapus makanan."""
+    con = sqlite3.connect(DB_PATH)
+    try:
+        cur = con.cursor()
+        columns = {row[1] for row in cur.execute("PRAGMA table_info(makanan)")}
+        if "alergen" not in columns:
+            cur.execute("ALTER TABLE makanan ADD COLUMN alergen TEXT NOT NULL DEFAULT ''")
+
+        tags = {
+            "Nasi uduk": "susu", "Nasi kuning": "susu", "Mie goreng": "gluten;telur",
+            "Mie rebus": "gluten;telur", "Gado-gado": "kacang", "Pecel": "kacang",
+            "Karedok": "kacang", "Ikan bakar": "ikan", "Ikan asam manis": "ikan",
+            "Ikan goreng": "ikan", "Pepes ikan": "ikan", "Telur rebus": "telur",
+            "Telur dadar": "telur", "Tempe goreng": "kedelai", "Tempe bacem": "kedelai",
+            "Tahu putih": "kedelai", "Tahu goreng": "kedelai", "Pempek": "ikan;telur",
+            "Oatmeal matang": "gluten", "Roti gandum": "gluten", "Roti tawar": "gluten",
+            "Pancake": "gluten;telur;susu", "Wafel": "gluten;telur;susu",
+            "Pizza keju": "gluten;susu", "Spaghetti bolognese": "gluten;telur",
+            "Mac and cheese": "gluten;susu", "Burger sapi": "gluten;telur",
+            "Salmon panggang": "ikan", "Sushi salmon": "ikan", "Ramen": "gluten;telur",
+            "Burrito ayam": "gluten", "Taco daging": "gluten", "Hummus": "kacang",
+            "Falafel": "kacang", "Keju cheddar": "susu", "Yoghurt tawar": "susu",
+            "Susu sapi": "susu", "Susu kedelai tawar": "kedelai", "Puding vanila": "susu;telur",
+            "Es krim vanila": "susu;telur", "Donat gula": "gluten;telur;susu",
+            "Biskuit asin": "gluten", "Kacang panggang tanpa garam": "kacang",
+            "Edamame rebus": "kedelai", "Tahu kukus": "kedelai", "Udang asam manis": "udang"
+        }
+        cur.executemany("UPDATE makanan SET alergen = ? WHERE nama = ?", [(value, name) for name, value in tags.items()])
+        con.commit()
+    finally:
+        con.close()
+
+intents = discord.Intents.default()
+intents.message_content = True
+
+bot = commands.Bot(command_prefix="!", intents=intents)
+
+
+def get_recommendations(
+    rasa="any",
+    jenis="any",
+    max_calories=None,
+    avoided_allergens=None
+):
+    con = sqlite3.connect(DB_PATH)
+
+    try:
+        cur = con.cursor()
+
+        query = """
+            SELECT
+                nama,
+                jenis,
+                rasa,
+                kalori_per_100g,
+                protein_g,
+                karbohidrat_g,
+                lemak_g,
+                kategori_gizi,
+                sumber_data,
+                catatan
+            FROM makanan
+            WHERE 1 = 1
+        """
+
+        params = []
+
+        # Filter rasa
+        if rasa != "any":
+            query += " AND LOWER(rasa) LIKE ?"
+            params.append(f"%{rasa.lower()}%")
+
+        # Filter jenis makanan
+        if jenis != "any":
+            query += " AND LOWER(jenis) LIKE ?"
+            params.append(f"%{jenis.lower()}%")
+
+        # Filter kalori opsional per 100 g
+        if max_calories is not None:
+            query += " AND kalori_per_100g <= ?"
+            params.append(max_calories)
+
+        for allergen in avoided_allergens or []:
+            query += " AND (';' || LOWER(alergen) || ';') NOT LIKE ?"
+            params.append(f"%;{allergen.lower()};%")
+
+        query += " ORDER BY RANDOM() LIMIT 5"
+
+        cur.execute(query, params)
+        return cur.fetchall()
+
+    finally:
+        con.close()
+
+
+FOOD_TYPES = ("makanan pokok", "makanan berat", "sup", "salad")
+
+
+@bot.event
+async def on_ready():
+    print(f"Bot masuk sebagai {bot.user}")
+    print("Bot rekomendasi makanan siap digunakan!")
+
+
+initialize_allergen_data()
+
+
+@bot.command()
+async def start(ctx):
+    await ctx.send(
+        " **Selamat datang di Bot Rekomendasi Makanan!**\n\n"
+        "Saya akan membantu Anda menemukan makanan Indonesia "
+        "sesuai selera dan preferensi Anda.\n\n"
+        "**Perintah:**\n"
+        "`!rekomendasi` - Cari rekomendasi makanan\n"
+        "`!help` - Lihat daftar perintah"
+    )
+
+
+bot.remove_command("help")
+
+
+@bot.command(name="help")
+async def help_command(ctx):
+    await ctx.send(
+        " **Bantuan Bot Rekomendasi Makanan**\n\n"
+        "`!start` - Perkenalan bot\n"
+        "`!rekomendasi` - Cari rekomendasi makanan\n\n"
+        "**Pilihan rasa:**\n"
+        "`gurih`, `asin`, `manis`, `pedas`, `asam`, `any`\n\n"
+        "**Jenis makanan:**\n"
+        "`Makanan pokok`, `Makanan berat`, `Sup`, `Salad`, atau `any`\n\n"
+        "**Filter alergi:**\n"
+        "Pilih `susu`, `telur`, `kacang`, `kedelai`, `gluten`, `ikan`, "
+        "atau `udang` saat menjalankan `!rekomendasi`."
+    )
+
+
+@bot.command()
+async def rekomendasi(ctx):
+
+    def check(message):
+        return (
+            message.author == ctx.author
+            and message.channel == ctx.channel
+        )
+
+    async with ctx.typing():
+
+        try:
+
+
+            await ctx.send(
+                " **Rasa apa yang Anda inginkan?**\n"
+                "Ketik salah satu:\n"
+                "`gurih`, `asin`, `manis`, `pedas`, "
+                "`asam`, atau `any`"
+            )
+
+            msg = await bot.wait_for(
+                "message",
+                check=check,
+                timeout=60
+            )
+
+            rasa = msg.content.strip().lower()
+
+            allowed_tastes = [
+                "gurih", "asin", "manis",
+                "pedas", "asam", "any"
+            ]
+
+            if rasa not in allowed_tastes:
+                await ctx.send(
+                    "❌ Rasa tidak valid. Silakan jalankan "
+                    "`!rekomendasi` lagi."
+                )
+                return
+
+
+            await ctx.send(
+                "**Jenis makanan apa yang Anda inginkan?**\n"
+                "`Makanan pokok`, `Makanan berat`, `Sup`, `Salad`, atau `any`"
+            )
+
+            msg = await bot.wait_for(
+                "message",
+                check=check,
+                timeout=60
+            )
+
+            jenis = msg.content.strip()
+
+            allowed_types = set(FOOD_TYPES) | {"any"}
+
+            if jenis.lower() not in allowed_types:
+                await ctx.send(
+                    "❌ Jenis makanan tidak valid. Silakan jalankan "
+                    "`!rekomendasi` lagi."
+                )
+                return
+
+            jenis = jenis.lower()
+
+
+            await ctx.send(
+                "**Preferensi gizi**\n"
+                "Masukkan batas maksimal kalori per 100 g, "
+                "atau ketik `any` untuk melewati filter.\n"
+                "Contoh: `200` atau `any`"
+            )
+
+            msg = await bot.wait_for(
+                "message",
+                check=check,
+                timeout=60
+            )
+
+            calorie_input = msg.content.strip().lower()
+
+            if calorie_input == "any":
+                max_calories = None
+
+            else:
+                try:
+                    max_calories = float(calorie_input)
+
+                    if not 0 < max_calories <= 1000:
+                        raise ValueError
+
+                except ValueError:
+                    await ctx.send(
+                        "❌ Masukkan angka antara 1 dan "
+                        "1000, atau ketik `any`."
+                    )
+                    return
+
+            await ctx.send(
+                "⚠️ **Filter alergi**\n"
+                "Ketik alergen yang ingin dihindari, pisahkan dengan koma, atau ketik `tidak ada`.\n"
+                "Pilihan: `susu`, `telur`, `kacang`, `kedelai`, `gluten`, `ikan`, `udang`\n"
+                "Contoh: `susu, telur`"
+            )
+
+            msg = await bot.wait_for("message", check=check, timeout=60)
+            allergy_input = msg.content.strip().lower()
+            avoided_allergens = [] if allergy_input in {"none", "tidak ada", "any"} else [
+                item.strip() for item in allergy_input.split(",") if item.strip()
+            ]
+
+            invalid_allergens = set(avoided_allergens) - ALERGENS
+            if invalid_allergens:
+                await ctx.send(
+                    "❌ Alergen tidak dikenal: "
+                    f"`{', '.join(sorted(invalid_allergens))}`. Jalankan `!rekomendasi` lagi."
+                )
+                return
+
+
+            await ctx.send("Mencari rekomendasi makanan...")
+
+            results = get_recommendations(
+                rasa=rasa,
+                jenis=jenis,
+                max_calories=max_calories,
+                avoided_allergens=avoided_allergens
+            )
+
+            if not results:
+                await ctx.send(
+                    " Tidak ada makanan yang sesuai.\n"
+                    "Coba ubah rasa, jenis makanan, preferensi gizi, atau filter alergi."
+                )
+                return
+
+
+            embed = discord.Embed(
+                title="Rekomendasi Makanan Anda",
+                description=(
+                    "Berikut makanan dari basis data Anda!\n"
+                    "⚠️ Tag alergen mengikuti resep umum; selalu periksa bahan makanan yang sebenarnya."
+                ),
+                color=discord.Color.orange()
+            )
+
+            for food in results:
+                (
+                    nama,
+                    food_type,
+                    taste,
+                    calories,
+                    protein,
+                    carbs,
+                    fat,
+                    category,
+                    source,
+                    notes
+                ) = food
+
+                embed.add_field(
+                    name=f" {nama}",
+                    value=(
+                        f"**Jenis:** {food_type}\n"
+                        f"**Rasa:** {taste}\n"
+                        f"**Kalori:** {calories:g} kkal/100 g\n"
+                        f"**Protein:** {protein:g} g/100 g\n"
+                        f"**Karbohidrat:** {carbs:g} g/100 g\n"
+                        f"**Lemak:** {fat:g} g/100 g\n"
+                        f"**Kategori gizi:** {category}"
+                    ),
+                    inline=False
+                )
+
+            embed.set_footer(
+                text=(
+                    "Nilai gizi adalah perkiraan per 100 g. "
+                    "Nilai sebenarnya dapat berbeda."
+                )
+            )
+
+            await ctx.send(embed=embed)
+
+        except TimeoutError:
+            await ctx.send(
+                "Waktu habis! Jalankan `!rekomendasi` "
+                "saat Anda siap mencoba lagi."
+            )
+
+        except sqlite3.Error as error:
+            print(f"Kesalahan basis data: {error}")
+            await ctx.send(
+                "❌ Terjadi kesalahan saat membaca "
+                "basis data makanan."
+            )
+
+bot.run(TOKEN)

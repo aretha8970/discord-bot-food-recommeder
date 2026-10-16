@@ -1,0 +1,2 @@
+DATABASE= "makanan.db"
+TOKEN= " "
