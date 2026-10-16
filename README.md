@@ -5,5 +5,4 @@ dan rasa makanannya
 # Perpustakaan yg diperlukan
 1. Discord.py
 2. sqlite3
-3. Pandas
-4. csv
+
